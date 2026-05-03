@@ -1,0 +1,214 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "private-isu Deploy"
+Parameters:
+  KeyName:
+    Description: The EC2 Key Pair to allow SSH access to the instance
+    Type: "AWS::EC2::KeyPair::KeyName"
+  GitHubUsername:
+    Description: "GitHub Username for SSH public key"
+    Type: String
+
+Resources:
+  # ------------------------------------------------------------#
+  #  Network
+  # ------------------------------------------------------------#
+  # VPC Create
+  VPC:
+    Type: "AWS::EC2::VPC"
+    Properties:
+      CidrBlock: 10.1.0.0/16
+      Tags:
+        - Key: Name
+          Value: isu-vpc
+
+  # InternetGateway Create
+  InternetGateway:
+    Type: "AWS::EC2::InternetGateway"
+    Properties:
+      Tags:
+        - Key: Name
+          Value: isu-igw
+
+  # IGW Attach
+  InternetGatewayAttachment:
+    Type: "AWS::EC2::VPCGatewayAttachment"
+    Properties:
+      InternetGatewayId: !Ref InternetGateway
+      VpcId: !Ref VPC
+
+  # Subnet01 Create
+  Subnet01:
+    Type: "AWS::EC2::Subnet"
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: ap-northeast-1a
+      CidrBlock: 10.1.1.0/24
+      Tags:
+        - Key: Name
+          Value: isu-subnet-01
+
+  # RouteTable01 Create
+  RouteTable01:
+    Type: "AWS::EC2::RouteTable"
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: isu-route-01
+
+  # Route01 Create
+  Route01:
+    Type: "AWS::EC2::Route"
+    Properties:
+      RouteTableId: !Ref RouteTable01
+      DestinationCidrBlock: "0.0.0.0/0"
+      GatewayId: !Ref InternetGateway
+
+  # RouteTable Associate Subnet01
+  Subnet01RouteTable01ssociation:
+    Type: "AWS::EC2::SubnetRouteTableAssociation"
+    Properties:
+      SubnetId: !Ref Subnet01
+      RouteTableId: !Ref RouteTable01
+
+  # ------------------------------------------------------------#
+  #  SG
+  # ------------------------------------------------------------#
+  # SG01 Create
+  SG01:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: isu-sg-01
+      GroupDescription: Allow access
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        # http
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        # https
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+        # ssh
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+        # icmp
+        - IpProtocol: icmp
+          FromPort: 8
+          ToPort: -1
+          CidrIp: 0.0.0.0/0
+        # allow internal
+        - IpProtocol: -1
+          CidrIp: 10.1.0.0/16
+
+  # ------------------------------------------------------------#
+  #  Instance
+  # ------------------------------------------------------------#
+  # ENI Create
+  ENI01:
+    Type: AWS::EC2::NetworkInterface
+    Properties:
+      SourceDestCheck: "false"
+      GroupSet:
+        - !Ref SG01
+      SubnetId: !Ref Subnet01
+      PrivateIpAddress: 10.1.1.11
+      Tags:
+        - Key: Name
+          Value: isu-eni-01
+
+  ENI04:
+    Type: AWS::EC2::NetworkInterface
+    Properties:
+      SourceDestCheck: "false"
+      GroupSet:
+        - !Ref SG01
+      SubnetId: !Ref Subnet01
+      PrivateIpAddress: 10.1.1.14
+      Tags:
+        - Key: Name
+          Value: isu-eni-bench
+
+  # EC2 Instance Create
+  # Referenced AMI: https://github.com/catatsuy/private-isu
+  # Login user is ubuntu
+  Instance01:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: ami-002d61d6436f85f12
+      KeyName: !Ref KeyName
+      InstanceType: c7a.large
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: 40 # Same as the production
+            VolumeType: gp3 # Same as the production
+      NetworkInterfaces:
+        - NetworkInterfaceId: !Ref ENI01
+          DeviceIndex: "0"
+      Tags:
+        - Key: Name
+          Value: isu-01
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          GITHUB_USER=${GitHubUsername}
+          mkdir -p /home/isucon/.ssh
+          curl -s https://github.com/$GITHUB_USER.keys >> /home/isucon/.ssh/authorized_keys
+          chown -R isucon:isucon /home/isucon/.ssh
+          chmod 600 /home/isucon/.ssh/authorized_keys
+
+  Instance04:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: ami-002d61d6436f85f12
+      KeyName: !Ref KeyName
+      InstanceType: c7a.xlarge
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: 40
+            VolumeType: gp3
+      NetworkInterfaces:
+        - NetworkInterfaceId: !Ref ENI04
+          DeviceIndex: "0"
+      Tags:
+        - Key: Name
+          Value: isu-bench
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          GITHUB_USER=${GitHubUsername}
+          mkdir -p /home/isucon/.ssh
+          curl -s https://github.com/$GITHUB_USER.keys >> /home/isucon/.ssh/authorized_keys
+          chown -R isucon:isucon /home/isucon/.ssh
+          chmod 600 /home/isucon/.ssh/authorized_keys
+
+  # EIP Create
+  EIP01:
+    Type: AWS::EC2::EIP
+    Properties:
+      InstanceId: !Ref Instance01
+
+  EIP04:
+    Type: AWS::EC2::EIP
+    Properties:
+      InstanceId: !Ref Instance04
+
+# ------------------------------------------------------------#
+#  Outputs
+# ------------------------------------------------------------#
+Outputs:
+  # EIP
+  Instance01PublicIP:
+    Value: !GetAtt Instance01.PublicIp
+    Description: Public IP of EC2 instance
+
+  Instance04PublicIP:
+    Value: !GetAtt Instance04.PublicIp
+    Description: Public IP of EC2 instance

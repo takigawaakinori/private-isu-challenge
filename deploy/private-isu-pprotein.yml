@@ -1,0 +1,95 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "private-isu Deploy"
+Parameters:
+  KeyName:
+    Description: The EC2 Key Pair to allow SSH access to the instance
+    Type: "AWS::EC2::KeyPair::KeyName"
+  GitHubUsername:
+    Description: "GitHub Username for SSH public key"
+    Type: String
+  SG01:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: "ID of the existing security group"
+  Subnet01:
+    Type: AWS::EC2::Subnet::Id
+    Description: "ID of the existing subnet"
+
+Resources:
+# ------------------------------------------------------------#
+#  Instance
+# ------------------------------------------------------------#
+# ENI Create
+  ENI05:
+    Type: AWS::EC2::NetworkInterface
+    Properties:
+      SourceDestCheck: 'false'
+      GroupSet:
+      - !Ref SG01
+      SubnetId: !Ref Subnet01
+      Tags:
+      - Key: Name
+        Value: isu-eni-05
+
+# EC2 Instance Create
+  Instance05:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: ami-0b20f552f63953f0e  # ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-20240927
+      KeyName: !Ref KeyName
+      InstanceType: c7a.large
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: 40
+            VolumeType: gp3
+      NetworkInterfaces:
+      - NetworkInterfaceId: !Ref ENI05
+        DeviceIndex: "0"
+      Tags:
+      - Key: Name
+        Value: isu-measure
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+
+          # ユーザー作成
+          useradd -m -s /bin/bash isucon
+
+          # ssh設定
+          GITHUB_USER=${GitHubUsername}
+          mkdir -p /home/isucon/.ssh
+          curl -s https://github.com/$GITHUB_USER.keys >> /home/isucon/.ssh/authorized_keys
+          chown -R isucon:isucon /home/isucon/.ssh
+          chmod 600 /home/isucon/.ssh/authorized_keys
+
+          # dockerインストール
+          curl -fsSL https://get.docker.com | sh
+          curl -L https://github.com/docker/compose/releases/download/v2.29.0/docker-compose-$(uname -s)-$(uname -m) -o /usr/local/bin/docker-compose
+          chmod +x /usr/local/bin/docker-compose
+          usermod -aG docker isucon
+
+          # pprotein設定
+          git clone https://github.com/kaz/pprotein.git /home/isucon/pprotein
+          git clone https://github.com/melanmeg/private-isu-challenge.git /home/isucon/private-isu-challenge
+          rm -f /home/isucon/pprotein/compose.yaml
+          cp /home/isucon/private-isu-challenge/compose.yml /home/isucon/pprotein
+          chown -R isucon:isucon /home/isucon/pprotein
+
+          # compose build & up
+          docker-compose -f /home/isucon/pprotein/compose.yml up -d --build
+
+
+# EIP Create
+  EIP05:
+    Type: AWS::EC2::EIP
+    Properties:
+      InstanceId: !Ref Instance05
+
+# ------------------------------------------------------------#
+#  Outputs
+# ------------------------------------------------------------#
+Outputs:
+  # EIP
+  Instance05PublicIP:
+    Value: !GetAtt Instance05.PublicIp
+    Description: Public IP of EC2 instance
